@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GRN Pipeline Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Run the pipeline with:
+#   python grn_pipeline.py --config pipeline_config.yaml
+#
+# To skip a stage, set its 'run' flag to false.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── Datasets ──────────────────────────────────────────────────────────────────
+# Each entry defines one dataset. The key is a free-form name used to label
+# output directories. 'samples' maps sample names to their source .h5ad paths.
+datasets:
+  BC_longitude:
+    samples:
+      pre_tumor:   /shared/nr57/GRN/data/3CA/BC_longitude/pre_tumor_clone_correct.h5ad
+      post1_tumor: /shared/nr57/GRN/data/3CA/BC_longitude/post1_tumor_clone_correct.h5ad
+      post2_tumor: /shared/nr57/GRN/data/3CA/BC_longitude/post2_tumor_clone_correct.h5ad
+
+  # Add more datasets by following the same pattern:
+  # Another_Dataset:
+  #   samples:
+  #     sampleA: /path/to/sampleA_clone_correct.h5ad
+  #     sampleB: /path/to/sampleB_clone_correct.h5ad
+
+
+# ── Output roots ──────────────────────────────────────────────────────────────
+# All generated data and results are written under these directories.
+# Per-dataset and per-method subdirectories are created automatically.
+output:
+  data_dir:    /shared/nr57/GRN/data/pipeline      # bootstraps, shuffles
+  grn_dir:     /shared/nr57/GRN/results/grns        # inferred GRN .tsv files
+  support_dir: /shared/nr57/GRN/results/support     # bootstrap support pickles
+
+
+# ── Methods ───────────────────────────────────────────────────────────────────
+# Built-in choices: celloracle, grnboost, combined (intersection of both).
+# To add a custom method, set name to any label and provide a script path.
+# The custom script must accept the same CLI interface as run_grn_parallel.py:
+#   --input_dir, --output_dir, --n_jobs
+methods:
+  - name: celloracle
+  - name: grnboost
+  # - name: combined          # merges celloracle + grnboost support scores
+
+  # Custom method example — provide any script with the required CLI interface:
+  # - name: my_method
+  #   script: /path/to/my_grn_method.py
+
+
+# ── Pipeline stages ───────────────────────────────────────────────────────────
+stages:
+  bootstrap:
+    run: true
+    n_bootstraps: 100        # number of bootstrap replicates per sample
+    cell_proportion: 0.9     # fraction of cells sampled per clone per replicate
+
+  shuffle:
+    run: true
+    n_shuffles: 100          # number of shuffle replicates per sample
+    random_seed: 42          # set to null for non-deterministic shuffles
+
+  grn_inference:
+    run: true
+    n_jobs: 4                # parallel workers per method
+
+  bootstrap_support:
+    run: true
+    rate: 0.9                # must match bootstrap.cell_proportion
+    n_bootstraps: 100        # must match bootstrap.n_bootstraps
+    clones:                  # clone labels present in inferred_clone column
+      - N
+      - C1
+      - C2
