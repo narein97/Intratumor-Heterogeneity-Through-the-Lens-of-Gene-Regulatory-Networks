@@ -1,0 +1,31 @@
+# Python environment for CellOracle GRN inference, clone calling and figure scripts.
+# Versions are the ones the pipeline notes record (Python 3.10, setuptools<81);
+# other pins are left open -- tighten them from `conda env export` on your machine.
+name: celloracle_env
+channels: [conda-forge, bioconda, defaults]
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - networkx
+  - pillow
+  - h5py
+  - python-igraph
+  - leidenalg
+  - pip:
+      - "setuptools<81"        # CellOracle/louvain still need pkg_resources
+      - scanpy
+      - anndata
+      - celloracle
+      - tqdm
+      # --- pathway_regulon_survival.ipynb and run_scenic_from_celloracle.py ---
+      - decoupler==1.9.2       # AUCell / CollecTRI (version used in the manuscript methods)
+      - gprofiler-official     # g:Profiler enrichment
+      - lifelines              # Kaplan-Meier / log-rank
+      - xenaPython             # TCGA data from UCSC Xena
+      - pyscenic               # motif pruning of CellOracle GRNs (also needs cisTarget motif table + hg38 *.feather databases)

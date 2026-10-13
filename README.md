@@ -1,285 +1,156 @@
-# Intratumor-Heterogeneity-Through-the-Lens-of-Gene-Regulatory-Networks
+# Intratumor Heterogeneity Through the Lens of Gene Regulatory Networks — analysis code
 
-An end-to-end pipeline for gene regulatory network (GRN) inference from single-cell RNA-seq data with clonal annotations. The pipeline bootstraps and shuffles input data, runs GRN inference in parallel, and computes per-edge bootstrap support scores across one or more datasets and methods.
+Code to reproduce the analyses and figures of the manuscript. Per-clone gene regulatory networks (GRNs) are inferred with CellOracle from
+single-cell RNA-seq, with bootstrap and label-shuffle controls. The pipeline takes any dataset from the Curated Cancer Cell Atlas (3CA) that has per-cell copy-number profiles: copy it into the data tree and steps 2-5 produce its clone-labelled h5ads, GRNs, bootstrap support and figures.
+The manuscript uses 253 patients across 12 cancer types (list in `data_manifests/cohort_253_patients.csv`), plus two longitudinal cohorts: a stage IV breast cancer patient (pre-/post-treatment) and the ovarian cancer cohort of Zhang et al. 2022 (GSE165897, pre-/post-neoadjuvant chemotherapy).
 
----
-
-## Overview
-
-The pipeline runs four sequential stages:
+## Pipeline
 
 ```
-Input .h5ad files
-       │
-       ▼
-┌─────────────────────┐
-│  1. Bootstrap data  │  Sample 90% of cells per clone × 100 replicates
-└─────────────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│  2. Shuffle data    │  Randomly permute clone labels to generate null replicates
-└─────────────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│  3. GRN inference   │  Run CellOracle, GRNBoost2, or a custom method in parallel
-└─────────────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│  4. Bootstrap       │  Score each edge in the whole-sample GRN by how often
-│     support         │  it appears across bootstrap replicates
-└─────────────────────┘
-       │
-       ▼
-Per-clone DataFrames saved as .pkl files
+ raw scRNA-seq + CNA profiles
+        │
+  [1] EOC only: split GSE165897 → inferCNV → per-patient h5ad
+        │
+  [2] clone calling   → <Patient>_clones.h5ad   (obs['clone'] = 0,1,2,… or 'N' for normal)
+        │
+  [3] bootstrap/shuffle definitions → CellOracle (201 units per patient, SLURM) → gather  → .uns['celloracle_*']
+        │                                   └→ [3b] SCENIC regulons on the CellOracle GRNs
+  [4] bootstrap support (p < 0.05 edges)   → <Patient>_clones_with_support.h5ad
+        │
+  [5] analysis + figure scripts → PNGs → composite figures
+  [6] regulons / pathways / meta-program networks / survival, and the stage IV longitudinal analysis (notebooks)
 ```
 
-Each stage can be run independently or toggled on/off in the config file.
+## Layout
 
----
-
-## File Structure
-
-```
-grn_pipeline.py        # Main pipeline runner
-pipeline_config.yaml   # User-facing configuration (edit this)
-```
-
-The individual module scripts (`create_bootstrap_data.py`, `create_shuffle_data.py`, `run_grn_parallel.py`, `compute_bootstrap_support.py`) are not required at runtime — their logic is fully integrated into `grn_pipeline.py`.
-
----
-
-## Requirements
-
-```
-scanpy
-numpy
-pandas
-networkx
-pyyaml
-tqdm
-joblib
-```
-
-Method-specific dependencies (only needed if the corresponding method is enabled):
-
-| Method | Package |
+| Path | Contents |
 |---|---|
-| `celloracle` | `celloracle` |
-| `grnboost` | `arboreto` |
+| `scripts/01_eoc_infercnv/` | GSE165897 splitting, inferCNV (parameters of Zhang et al. 2022), per-patient h5ad builder |
+| `scripts/02_clone_calling/` | `clone_sweep.py` (3CA), `clone_sweep_zhang2022.py` (EOC), `make_pooled_tumor_h5ad.py`, helper scripts |
+| `scripts/03_grn_inference/` | bootstrap/shuffle definitions, CellOracle worker and SLURM scripts, gather step, SCENIC |
+| `scripts/04_bootstrap_support/` | per-edge bootstrap support |
+| `scripts/05_analysis_and_figures/` | cohort-wide figures and statistics, treatment-phase analysis, composite figures |
+| `notebooks/pathway_regulon_survival.ipynb` | regulons, pathways, meta-program networks, centrality, TCGA survival (Figs 7–8) |
+| `notebooks/longitudinal_stage4_breast.ipynb` | stage IV breast cancer: pre- vs post-treatment GRN divergence, neighbourhood similarity, centrality (Fig 5) |
+| `data_manifests/cohort_253_patients.csv` | the 253 patients (`cancer, dataset, sample, n_clones, tag`) |
+| `data_manifests/distinctness_classified.csv` | per-sample result of the visual distinctness pre-filter on the 3CA cohort |
+| `environment.yml`, `r-requirements.md` | software environments |
 
----
+Each script starts with a one-line description and its run command.
 
-## Quick Start
-
-**1. Edit the config** to point to your data and set your parameters:
-
-```yaml
-datasets:
-  My_Dataset:
-    samples:
-      sample_A: /path/to/sample_A_clone_correct.h5ad
-      sample_B: /path/to/sample_B_clone_correct.h5ad
-
-output:
-  data_dir:    /path/to/output/data
-  grn_dir:     /path/to/output/grns
-  support_dir: /path/to/output/support
-
-methods:
-  - name: celloracle
-  - name: grnboost
-
-stages:
-  bootstrap_support:
-    clones: [N, C1, C2]   # must match inferred_clone values in your .h5ad files
-```
-
-**2. Run the full pipeline:**
+## Software
 
 ```bash
-python grn_pipeline.py --config pipeline_config.yaml
+conda env create -f environment.yml && conda activate celloracle_env
 ```
+EOC inferCNV additionally needs R with inferCNV **1.4.0** (`r-requirements.md`). The cluster scripts (`*.slurm`, `controller.sh`, `submit_*.sh`) were written for a SLURM cluster; edit the account, partition and environment lines.
 
-**3. Run specific stages only:**
+## Data needed
 
+| Dataset | What | Source |
+|---|---|---|
+| 3CA scRNA-seq + per-cell CNAs (any 3CA dataset; 253 patients, 12 cancer types in the manuscript) | `Exp_data_*.mtx`, gene and cell files, per-cell CNA matrix, laid out as `data/<Cancer>/<Dataset>/`, as `clone_sweep.py` expects (`--inspect` checks it) | Curated Cancer Cell Atlas |
+| GSE165897 (Zhang et al. 2022) | `GSE165897_UMIcounts_HGSOC.tsv`, `GSE165897_cellInfo_HGSOC.tsv` | GEO |
+| GENCODE v25 gene order file | for EOC inferCNV and `clone_sweep_zhang2022.py` | gencodegenes.org |
+| hg38 gene order file (`hg38_gencode_v27.txt`) | for `clone_sweep.py` | GENCODE v27 |
+| TCGA-BRCA / TCGA-GBM expression and clinical data | fetched live in the survival section of the notebook | UCSC Xena |
+| cisTarget motif table and hg38 ranking databases | for the SCENIC step | aertslab |
+
+No data are shipped (`.gitignore` excludes `*.h5ad`, `*.npz`).
+
+## Running it
+
+Run each command from the directory containing the script.
+
+### 1. EOC only — inferCNV and per-patient h5ads
 ```bash
-python grn_pipeline.py --config pipeline_config.yaml --stages bootstrap grn_inference
+cd scripts/01_eoc_infercnv
+python split_gse165897_by_patient.py --counts GSE165897_UMIcounts_HGSOC.tsv --annotations GSE165897_cellInfo_HGSOC.tsv --all --out_dir split_patients
+MAX_PARALLEL=10 bash run_infercnv_all_patients_parallel.sh          # wraps run_infercnv_zhang2022.R; resumable
+python build_h5ad_per_patient.py --split_dir split_patients --full_annotations GSE165897_cellInfo_HGSOC.tsv --infercnv_dir infercnv_out --all --out_dir h5ad_out
+# if your inferCNV version does not write infercnv.observations.txt:  Rscript extract_cnv_from_infercnv_obj.R infercnv_out/<patient>
 ```
 
----
-
-## Configuration Reference
-
-### `datasets`
-
-Defines one or more datasets to process. Each dataset key is a free-form label used to name output subdirectories. `samples` maps sample names to their source `.h5ad` file paths.
-
-The `.h5ad` files must have an `inferred_clone` column in `adata.obs`.
-
-```yaml
-datasets:
-  Dataset_Name:
-    samples:
-      sample_name: /path/to/file_clone_correct.h5ad
-```
-
-### `output`
-
-All output directories. Subdirectories per dataset and method are created automatically.
-
-| Key | Contents |
-|---|---|
-| `data_dir` | Bootstrap and shuffle `.h5ad` replicates |
-| `grn_dir` | Inferred GRN `.tsv` files |
-| `support_dir` | Bootstrap support score `.pkl` files |
-
-### `methods`
-
-List of GRN inference methods to run. Built-in options are `celloracle`, `grnboost`, and `combined`. See the [Custom Methods](#custom-methods) section to add your own.
-
-```yaml
-methods:
-  - name: celloracle
-  - name: grnboost
-  - name: combined    # computes the intersection of celloracle and grnboost results
-```
-
-`combined` is only relevant to Stage 4 (bootstrap support). It intersects the edge sets of the two single methods and averages their support scores. It is silently ignored during Stage 3 (GRN inference).
-
-### `stages`
-
-Each stage has a `run` boolean flag and its own parameters.
-
-#### `bootstrap`
-
-| Parameter | Default | Description |
-|---|---|---|
-| `run` | `true` | Whether to run this stage |
-| `n_bootstraps` | `100` | Number of bootstrap replicates per sample |
-| `cell_proportion` | `0.9` | Fraction of cells sampled per clone per replicate |
-
-#### `shuffle`
-
-| Parameter | Default | Description |
-|---|---|---|
-| `run` | `true` | Whether to run this stage |
-| `n_shuffles` | `100` | Number of shuffle replicates per sample |
-| `random_seed` | `42` | RNG seed; set to `null` for non-deterministic results |
-
-#### `grn_inference`
-
-| Parameter | Default | Description |
-|---|---|---|
-| `run` | `true` | Whether to run this stage |
-| `n_jobs` | `4` | Number of parallel worker processes |
-
-#### `bootstrap_support`
-
-| Parameter | Default | Description |
-|---|---|---|
-| `run` | `true` | Whether to run this stage |
-| `rate` | `0.9` | Bootstrap sampling rate label (should match `bootstrap.cell_proportion`) |
-| `n_bootstraps` | `100` | Number of replicates to load (should match `bootstrap.n_bootstraps`) |
-| `clones` | — | **Required.** List of clone labels present in `inferred_clone` |
-
----
-
-## Output Structure
-
-```
-data_dir/
-└── {dataset}/
-    ├── bootstrap_{dataset}/
-    │   └── {sample}/
-    │       ├── {sample}_bootstrap_1.h5ad
-    │       ├── {sample}_bootstrap_2.h5ad
-    │       └── ...
-    └── shuffle_{dataset}/
-        └── {sample}/
-            ├── {sample}_shuffle_1.h5ad
-            └── ...
-
-grn_dir/
-└── {dataset}/
-    └── {method}/
-        ├── CL{clone}-{sample}_bootstrap_1-{method}-net.tsv
-        ├── CL{clone}-{sample}_bootstrap_2-{method}-net.tsv
-        └── ...
-
-support_dir/
-└── {dataset}/
-    ├── G_df_celloracle.pkl
-    ├── G_df_grnboost.pkl
-    └── G_df_combined.pkl      # only if combined is in methods
-```
-
-### Support score pickles
-
-Each `.pkl` file is a `dict[clone -> pd.DataFrame]` with the following columns:
-
-| Column | Description |
-|---|---|
-| `source` | Source gene (TF) |
-| `target` | Target gene |
-| `support_{rate}` | Number of bootstrap replicates in which this edge was present (0–100) |
-| `edge` | `(source, target)` tuple |
-| `unique` | `True` if this edge does not appear in any other clone's GRN |
-
----
-
-## Custom Methods
-
-To use a GRN inference method other than CellOracle or GRNBoost2, provide a Python script that defines the following function:
-
-```python
-def run_grn_for_file(h5ad_path: str, output_dir: str) -> None:
-    ...
-```
-
-The function receives the path to a single `.h5ad` bootstrap replicate and the directory where output TSV files should be written. Output files must follow the naming convention:
-
-```
-CL{clone}-{sample}-{method}-net.tsv
-```
-
-Then register it in the config:
-
-```yaml
-methods:
-  - name: my_method
-    script: /path/to/my_grn_method.py
-```
-
-The pipeline will import the script dynamically and call `run_grn_for_file` for each bootstrap file. The method name (`my_method`) is used as a directory label and as the `{method}` token in output filenames.
-
-> **Note:** Bootstrap support scoring (Stage 4) uses built-in edge-filtering logic for `celloracle` and `grnboost`. For a custom method, you will need to extend `_load_grn_as_graph()` in `grn_pipeline.py` to handle your TSV format, or ensure your TSV follows the CellOracle (`source`, `target`, `p`, `coef_mean`) or GRNBoost2 (`TF`, `target`, `importance`) column schema.
-
----
-
-## Input Requirements
-
-Each `.h5ad` file must satisfy the following:
-
-- `adata.obs` contains an `inferred_clone` column with string clone labels.
-- At least one clone must be labelled `"N"` (the normal/reference clone).
-- Expression data is stored in `adata.X` (raw counts are expected prior to normalisation; the pipeline normalises internally for CellOracle).
-
----
-
-## Resuming a Partial Run
-
-Each stage checks whether its outputs already exist before recomputing:
-
-- **Bootstrap / Shuffle:** Output `.h5ad` files are written per replicate; already-written files are not regenerated.
-- **GRN inference:** Per-clone TSV outputs are checked before running inference on a file; existing files are skipped.
-- **Bootstrap support:** Recomputed from scratch per run. Re-run only this stage with `--stages bootstrap_support` if needed.
-
-To re-run only specific stages:
-
+### 2. Clone calling
+Clones are called with one automated procedure for all patients: scale → PCA(20) → neighbours(20) → Leiden at resolution 1.0 (over-clustering) → iterative merging of the closest cluster pair
+unless a permutation test (200 permutations, Bonferroni-adjusted α = 0.05) shows the pair is distinct; CNAs aggregated to chromosome arms; clones with < 50 cells dropped; patients with < 2 clones skipped.
 ```bash
-# Re-run GRN inference and support scoring only
-python grn_pipeline.py --config pipeline_config.yaml --stages grn_inference bootstrap_support
+cd scripts/02_clone_calling
+python clone_sweep.py --inspect
+python clone_sweep.py --data-root data --gene-order hg38_gencode_v27.txt --materialize --out clones_out     # clones_out/<Cancer>/<Dataset>/<Sample>_clones.h5ad
 ```
+To add a dataset, put its 3CA folder at `data/<Cancer>/<Dataset>/` and rerun this command (restrict to it with `--cancer <Cancer> --dataset <Dataset>`); steps 3-5 then pick up every `*_clones.h5ad` under `clones_out`.
+EOC (same procedure on the inferCNV-derived profiles):
+```bash
+python clone_sweep_zhang2022.py --h5ad_dir h5ad_out --gene-order gencode_v25_gene_order.txt --materialize --out clones_out
+cd clones_out && python <repo>/scripts/02_clone_calling/make_clone_copies.py      # writes <Patient>_clones.h5ad with the clone-sweep clones
+mkdir -p Ovarian/Zhang2022 && mv *_clones.h5ad Ovarian/Zhang2022/
+```
+
+### 3. CellOracle GRNs with bootstrap and shuffle controls
+```bash
+cd scripts/03_grn_inference
+python add_bootstrap_shuffle.py --root clones_out --inplace
+python add_bootstrap_shuffle_zhang2022.py --root clones_out/Ovarian --inplace
+DATA_ROOT=clones_out RESULTS_ROOT=grn_results nohup bash controller.sh >> controller.log 2>&1 &
+python check_grn_completeness.py --root clones_out
+```
+Each patient gets 100 bootstrap resamples (90 % of each clone's cells) and 100 label shuffles, run as 201 CellOracle units on SLURM and gathered into the patient h5ad
+(`.uns['celloracle_original' | '_bootstrap' | '_shuffle']`; edge-list columns `[clone, source, target, coef_mean, coef_abs, p, -logp]`, coded against `clone_categories` / `celloracle_genes`).
+A single unit can be run directly: `python run_celloracle_task.py --h5ad P_clones.h5ad --results-dir DIR --kind {original|bootstrap|shuffle} [--rep i]`.
+
+**3b. SCENIC regulons on the CellOracle GRNs** (used for the meta-program networks of Figs 7–8):
+```bash
+python run_scenic_from_celloracle.py --h5ad clones_out/Breast/Wu_et_al_2021/CID4495_clones.h5ad --out scenic_out \
+    --motif-file motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl --db-glob '/path/to/hg38/*feather' --export-celloracle
+```
+Writes `scenic_out/<Dataset>/<Sample>/CL<clone>-whole-scenic-net.tsv` (`Gene1, Gene2, weight`) and, with `--export-celloracle`, `CL<clone>-{whole|1..100}-celloracle-net.tsv`.
+
+### 4. Bootstrap support
+```bash
+cd scripts/04_bootstrap_support
+python compute_bootstrap_support.py --root clones_out          # or: bash submit_bootstrap_support.sh  (SLURM array)
+python validate_bootstrap_results.py --root clones_out
+```
+Writes `*_with_support.h5ad` next to each patient file; the source files are never modified. The ovarian cohort is analysed separately (`--root clones_out/Ovarian --exclude-cancer-type`).
+
+### 5. Analyses and figures
+```bash
+cd scripts/05_analysis_and_figures
+python bootstrap_figures_efficient.py --root clones_out --out bootstrap_figs_out
+python intra_vs_inter_efficient.py    --root clones_out --out intra_vs_inter_out
+python plot_jaccard_clone_vs_normal.py --root clones_out --out plots/
+python treatment_phase_comparison_zhang2022.py --root clones_out/Ovarian --out treatment_phase_out --pre-label treatment-naive --post-label post-NACT --min-abs-cells 50
+python make_composite_figures.py --bootstrap-figs bootstrap_figs_out --intra-inter intra_vs_inter_out --treatment-phase treatment_phase_out --out figures
+python make_supplementary_composites.py --bootstrap-figs bootstrap_figs_out --out supp_figs
+```
+`make_composite_figures.py` writes `Fig2.png`, `Fig3.png` and `Fig6.png`.
+
+### 6. Regulons, pathways, meta-program networks, centrality and survival
+`notebooks/pathway_regulon_survival.ipynb` (Figs 7–8, Supplementary Figs S5, S7–S9). Set `DATA_ROOT` and `GENE_ORDER_FILE` in the first code cell (or `ITH_DATA_ROOT` / `ITH_GENE_ORDER`), then run it once for TNBC and once for glioblastoma
+by editing `SAMPLE` / `specimen` / `datasets`. It uses the SCENIC and CellOracle edge lists from step 3b and the gene-set tables listed in the notebook's first cell, and expects the h5ad conventions listed there (`obs['inferred_clone']`, `uns['cnp']`).
+
+### 7. Stage IV breast cancer longitudinal analysis
+Run the stage IV samples (`pre`, `post1`, `post2`) as a dataset through steps 2-4 into their own root, then create the pooled-tumour copies (all malignant cells as one clone `T`, normal `N`) and run steps 3-4 on them too:
+```bash
+python scripts/02_clone_calling/make_pooled_tumor_h5ad.py --in-dir stage4_out/Breast/Stage4 --out-dir stage4_out/Breast/Stage4_pooled
+```
+`notebooks/longitudinal_stage4_breast.ipynb` (Fig 5, Supplementary Fig S3) reads `*_clones_with_support.h5ad` from `stage4_out/Breast/Stage4` and `stage4_out/Breast/Stage4_pooled` (set `ROOT`, `CLONE_DIR`, `POOLED_DIR` in its first cell, or `ITH_STAGE4_ROOT`).
+Keep this root separate from `clones_out` so the cohort-wide scripts do not pick it up.
+
+## Figure map
+
+| Manuscript figure | Produced by |
+|---|---|
+| Figs 1, 4 (TNBC/CRC clone-vs-normal, intra/inter-clone) | `bootstrap_figures_efficient.py`, `intra_vs_inter_efficient.py`, `plot_jaccard_clone_vs_normal.py` |
+| Fig 2 (extended cohort: clone vs normal) | `bootstrap_figures_efficient.py` → `make_composite_figures.py` (`Fig2.png`) |
+| Fig 3 (extended cohort: intra/inter, shuffle, clone-size divergence) | `intra_vs_inter_efficient.py` + `bootstrap_figures_efficient.py` → `make_composite_figures.py` (`Fig3.png`) |
+| Fig 5 (stage IV breast, longitudinal) | `notebooks/longitudinal_stage4_breast.ipynb` |
+| Fig 6 (pre- vs post-NACT, EOC) | `treatment_phase_comparison_zhang2022.py` → `make_composite_figures.py` (`Fig6.png`) |
+| Figs 7–8, Supplementary Figs S5, S7–S9 | `notebooks/pathway_regulon_survival.ipynb` |
+| Supplementary Figs S11–S18 | `bootstrap_figures_efficient.py`, `intra_vs_inter_efficient.py` → `make_supplementary_composites.py` |
+| Supplementary Tables S1–S3 | `data_manifests/cohort_253_patients.csv` |
+
+
+## Citing / data availability
+

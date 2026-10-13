@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.h5ad
+*.npz
+*.rds
+logs/
+*.log
+.Rhistory
+.RData
+# generated outputs
+bootstrap_figs_out/
+intra_vs_inter_out/
+treatment_phase_out/
+sweep_out/
+clones_out/
+grn_results/
